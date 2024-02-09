@@ -1,0 +1,252 @@
+initialize() {
+   // warning: sim.generation replaced by sim.cycle in gevpc10 SLiM version
+	//setwd("//mnt/data1/paree/SLiM_gev/");
+	//setwd("/Users/tomparee/SLiM_gev/");
+	setwd("/Users/tomparee/Documents/Documents - MacBook Pro de tom/Data/rec1EE/SLiM/transitory/");
+	initializeSLiMModelType("nonWF");
+	
+	if (exists("slimgui")) {
+	 defineConstant("self_rate", 0.2); // selfing rate
+	 //defineConstant("s", 0.05); //selection coefficient
+	 //defineConstant("h", 0.5); //dominance
+	 defineConstant("nloci", 4500); // number of loci
+	 defineConstant("N", 1000); // population size
+	 defineConstant("beta", 1); // epistasis
+	 defineConstant("spath", "selection_ce7dulp4gi.txt");
+	 defineConstant("rrpath", "rrmap_ce7dulp4gi.txt");
+	 defineConstant('initialpoppath', "initialPop_ce7dulp4gi.txt");
+	 defineConstant('outpath', "initialPop_burnin.txt");
+	 defineConstant('outid', NULL);
+	 defineConstant("nCO", 1);
+	};
+	
+	
+	// sexratio according to selfing rate
+	defineConstant("male_freq", 0.5 * (1-self_rate)); // male frequenc
+	defineConstant("herm_freq", 1 - male_freq); // herm frequency
+	
+	
+	
+	// selection and dominance coefficient 
+	scoef = readFile(spath);
+	defineConstant("s", asFloat(strsplit(scoef[0], ',')));
+	defineConstant("h", asFloat(strsplit(scoef[1], ',')));
+	
+	
+	// recombination landscape (wt or mut)
+	// (!):The rows in the rr file need to be in the good order
+	rr = readFile(rrpath);
+	
+	//defineConstant("rrmapwt", asFloat(strsplit(rr[0], ',')));
+	defineConstant("rrmap", asFloat(strsplit(rr[0], ',')));
+	//if(rec==0){
+	//defineConstant("rrmap", asFloat(strsplit(rr[0], ',')));
+	//}else{
+	//defineConstant("rrmap", asFloat(strsplit(rr[1], ',')));
+	//};
+	
+	defineConstant("chromosomes", asInteger(strsplit(rr[2], ',')));
+	
+		
+	// deterine loci between chrom
+	chrom_junctions = NULL;
+	for(chr in unique(chromosomes)){
+	chrom_junctions = c(chrom_junctions, min(which(chromosomes==chr)));
+	};
+	
+	if(size(chrom_junctions)>1){
+	chrom_junctions= chrom_junctions[1:(size(chrom_junctions)-1)];
+	}else{chrom_junctions = NULL;};
+	
+	defineConstant("between_chrom", chrom_junctions);
+	
+	// the recomination expected between the more distant marker
+	// Max = nCO if marker encompass the full chromosome
+	rtot = NULL;
+	for(chr in unique(chromosomes)){
+	rtot = c(rtot, sum(rrmap[chromosomes==chr]));
+	};
+	
+	// recombination == low
+	//if(rec==2){rtot=rtot/2;};
+		
+	defineConstant("rrtot", cbind(rtot, asFloat(unique(chromosomes))));
+	
+	// Base parameters	
+	initializeMutationType("m1", 0.5, "f", 0.0); 
+	
+	initializeGenomicElementType("g1", m1, 1.0);
+	initializeGenomicElement(g1, 0, nloci-1);
+	initializeMutationRate(0);
+	initializeRecombinationRate(0.5);
+	m1.convertToSubstitution = F;
+
+}
+
+
+// create an initial population of N individuals
+1 early() {
+
+	sim.readFromPopulationFile(initialpoppath);
+	
+	
+	// Set sex: 
+	inds = sim.subpopulations.individuals[0:(N-1)];
+	//sex: males are 1, herm are 0
+	sex = sample(c( rep(1, asInteger(round(N*male_freq))) , rep(0,asInteger(round(N*herm_freq)))), N);
+	inds[sex==1].tag = 1;
+	inds[sex==0].tag = 0;
+	
+	}
+
+// Non overlapping generation
+early() {
+	//Kill individual with age > 0
+	// WARNING: in nonWF, fitness = survival
+	// The mating success (relative fitness) is computed in reproduction
+	 p1.subsetIndividuals(minAge=1).fitnessScaling=0;
+}
+
+
+
+
+// Androdioecy
+reproduction() {
+	// Step 1: determine fitness
+	//simple multiplicative fitness:
+	
+	//nmut1 = p1.individuals.countOfMutationsOfType(m1);
+	
+	if(sim.cycle > 2){	
+	
+	gval=NULL;
+	for(i in 0:(N-1)){
+	pos1 = p1.individuals.genome1[i].positionsOfMutationsOfType(m1);
+	pos2 = p1.individuals.genome2[i].positionsOfMutationsOfType(m1);
+	pos1 = match(0:(nloci-1), pos1);
+	pos2 = match(0:(nloci-1), pos2);
+	pos1 = ifelse(pos1==-1, 0,1);
+	pos2 = ifelse(pos2==-1, 0,1);
+	pos = pos1+pos2;
+	
+	alpha = s;
+	alpha[pos==1] = alpha[pos==1]*h[pos==1];
+	alpha[pos==0] = 0;
+	g=sum(alpha);
+	gval = c(gval,  g); // absolute genetic value of an individual if additive
+	};
+	
+	grel = (gval-min(gval)) / (max(gval) - min(gval)); // relative gval
+	grel = grel - beta*grel^2; //curve the fitness landscape for individual within a generation
+	gval2 = grel * (max(gval) - min(gval)) + min(gval); //new gval with epistasis. If beta = 0, then gval=gval2
+		
+		
+	
+	if(sim.cycle == 3){defineConstant("ginitial", mean(gval2));}; // the average gval at the start
+	gval2 = gval2 - ginitial; // change nothing to evolution but initial fitness will be 1, and ancestral gval centered on 0
+	
+	if(beta>0){fitnesses = exp(gval2);}else{fitnesses = rep(1, N);};
+	
+	
+	if((sim.cycle % 2)==1){
+	 print(c(mean(fitnesses), var(fitnesses),var(log(fitnesses)),
+	 min(fitnesses), max(fitnesses),
+	 mean(gval), var(gval), 
+	 mean(gval2), var(gval2), 
+	 sim.cycle-2));
+	};
+	
+	}else{
+	
+	fitnesses = rep(1, N);
+	};
+	
+	if(sim.cycle>=101){fitnesses = rep(1, N);}
+	
+	// Step 2: Determine sex
+	whichmales = p1.individuals.tag==1;
+	males = p1.subsetIndividuals(tag=1);
+   hermaphrodites = p1.subsetIndividuals(tag=0);
+   
+   // Step 3: from the progeny point of view
+   // => a (herm)parents 1 and parents 2 vector, where vector[i] correspond to progeny i
+   // parents 2 == parents 1 if selfed
+   // note: whichselfed could be changed to force an exact number of selfing event
+   whichselfed = sample(c(T,F), N, replace = T, weights = c(self_rate, 1 - self_rate));
+   noutcrossed = N - sum(whichselfed);
+   
+   hermparents1 = sample(hermaphrodites, N, replace=T, weights = fitnesses[!whichmales]);
+   parents2 = hermparents1;
+   parents2[!whichselfed] = sample(males, noutcrossed, replace=T, weights = fitnesses[whichmales]);
+   
+   // newsex of the progeny (0=herm, 1=male)
+   // for outcrossed progeny, 50% chance being male
+   newsex = integer(N);
+   newsex[!whichselfed] = sample(c(0,1), noutcrossed, replace=T);
+   // note newsex could be modified to force an exact sex ratio
+   // notably if population size is small and there is randomly no males, the code will bug
+   
+   //print(newsex);
+   //print(whichselfed);
+   //print(hermparents1);
+   //print(parents2);
+   
+   for(i in 0:(N-1)){
+   offspring = subpop.addCrossed(hermparents1[i],parents2[i]);
+   offspring.tag = newsex[i];
+   };
+   
+   // Necessary to call reproduction() only one time and pass in bulk progeny production
+   self.active = 0;
+}
+
+
+recombination(p1) {
+
+if(sim.cycle>=101){
+  return F;
+  }else{
+ // breakpoints between chromosomes = between_chrom (defined as a constant in Initialize)
+ // one breakpoints within each chromosomes (obligate CO) sampled according to rrmap
+
+ positions = between_chrom;
+ for(chr in unique(chromosomes)){
+ focal_chr = which(chromosomes==chr);
+ focal_chr = focal_chr[1:(size(focal_chr)-1)];
+ 
+ focal_rr = rrmap[chromosomes==chr];
+  
+ focal_rr = focal_rr[1:(size(focal_rr)-1)];
+
+ ncrossover = sum(runif(1) < rrtot[which(rrtot[,1]==chr) ,0]);
+ positions = c(positions, sample(focal_chr,ncrossover, weights = focal_rr));
+
+ }
+
+ positions = positions[order(positions)];
+ positions = positions[sample(c(T,F), size(positions) , replace=T)]; // 50cM / half chance to have a CO
+
+ breakpoints = positions;
+ //print(breakpoints);
+ return T;
+};
+}
+
+
+
+// output all fixed mutations at end
+2 late() {
+	print("#OUT:");
+	print(c("mean.fitness", "var.fitness", "log.var.fitness",
+	"min.fitness", "max.fitness",
+	'mean.gabs', 'var.gabs', 
+	'mean.g', 'var.g', 
+	"generation"));}
+	
+
+
+
+100 late() {
+	sim.outputFull(outpath); }
+
+103 late(){}

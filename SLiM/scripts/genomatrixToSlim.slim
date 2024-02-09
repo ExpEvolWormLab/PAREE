@@ -1,0 +1,220 @@
+initialize() {
+
+	setwd("/Users/tomparee/Documents/Documents - MacBook Pro de tom/");
+	
+	initializeSLiMModelType("nonWF");
+	
+	if (exists("slimgui")) {
+	
+	setwd("/Users/tomparee/Documents/Documents - MacBook Pro de tom/Data/rec1EE/SLiM/transitory/");
+	
+	 defineConstant("rrpath", "./rrmap.txt");
+	 defineConstant('genomatrixpath', "genomatrix.txt");
+	 defineConstant('outpath', "initialPop.txt");
+	 defineConstant("nloci", 1200); // number of loci
+	defineConstant("N", 1000); // population size
+	};
+	
+	if(!exists("nCO")){defineConstant("nCO", 1);};
+	
+	defineConstant("self_rate", 0); // selfing rate
+	defineConstant("rec", 0);
+
+		
+	// sexratio according to selfing rate
+	defineConstant("male_freq", 0.5 * (1-self_rate)); // male frequenc
+	defineConstant("herm_freq", 1 - male_freq); // herm frequency
+	
+	// recombination landscape (wt or mut)
+	// (!):The rows in the rr file need to be in the good order
+	rr = readFile(rrpath);
+	
+	if(rec==0){
+	defineConstant("rrmap", asFloat(strsplit(rr[0], ',')));
+	}else{
+	defineConstant("rrmap", asFloat(strsplit(rr[1], ',')));
+	};
+	
+	defineConstant("chromosomes", asInteger(strsplit(rr[2], ',')));
+	
+	rtot = NULL;
+	for(chr in unique(chromosomes)){
+	rtot = c(rtot, sum(rrmap[chromosomes==chr]));
+	};
+		
+	defineConstant("rrtot", cbind(rtot, asFloat(unique(chromosomes))));
+	
+	
+		
+	// deterine loci between chrom
+	chrom_junctions = NULL;
+	for(chr in unique(chromosomes)){
+	chrom_junctions = c(chrom_junctions, min(which(chromosomes==chr)));
+	};
+	
+	if(size(chrom_junctions)>1){
+	chrom_junctions= chrom_junctions[1:(size(chrom_junctions)-1)];
+	}else{chrom_junctions = NULL;};
+	
+	defineConstant("between_chrom", chrom_junctions);
+	
+	// Base parameters	
+	initializeMutationType("m1", 0.5, "f", 0.0); 
+	
+	initializeGenomicElementType("g1", m1, 1.0);
+	initializeGenomicElement(g1, 0, nloci-1);
+	initializeMutationRate(0);
+	initializeRecombinationRate(1e-8);
+	
+	
+}
+
+
+// create an initial population of N individuals
+// create an initial population of N individuals
+1 early() {
+	// Create genotypes from genomatrix
+	gg = readFile(genomatrixpath);
+	
+	genomatrix=NULL;
+	for(g in gg){genomatrix =rbind(genomatrix, asInteger(strsplit(g, ',')));}
+	rm(gg);
+	
+	//print(genomatrix);
+	
+	//muttype = unique(genomatrix);
+	//muttype = muttype[muttype!=0]; // the type of mutations
+	mutloci = apply(genomatrix, 0, "max(applyValue);"); // the type of mutation at each loci
+	
+	// Create a population with N + 1 individual
+	// The last ind is a dummy to create the mutation
+	// it will be killed
+	sim.addSubpop("p1", N+1);
+	
+	// Create the all mutations in the dummy
+	g = p1.individuals[N].genome1;
+	//print(muttype);
+	muts = g.addNewMutation(m1, 0.0, which(mutloci==1));
+	f1eev1401 =  apply(genomatrix[which(mutloci==1),N], 0, "applyValue==1;");
+	p1.individuals.genome1.addMutations(muts[f1eev1401]);
+	
+	
+	// Then mutations in individuals depending the genotype matrix
+	index=0;
+	for (ind in p1.individuals[0:(N-1)]){
+	//print(index);
+	
+	f1 =  apply(genomatrix[which(mutloci==1),index], 0, "applyValue==1;");
+	ind.genome2.addMutations(muts[f1]);
+			
+	index = index + 1;
+	
+	};
+
+
+	
+	// Set sex: 
+	inds = sim.subpopulations.individuals[0:(N-1)];
+	//sex: males are 1, herm are 0
+	sex = sample(c( rep(1, asInteger(round(N*male_freq))) , rep(0,asInteger(round(N*herm_freq)))), N);
+	inds[sex==1].tag = 1;
+	inds[sex==0].tag = 0;
+	
+	// Kill the dummy individual
+	sim.subpopulations.individuals[N].fitnessScaling=0;
+}
+
+
+
+
+
+// Non overlapping generation
+early() {
+	//Kill individual with age > 0
+	// WARNING: in nonWF, fitness = survival
+	// The mating success (relative fitness) is computed in reproduction
+	 p1.subsetIndividuals(minAge=1).fitnessScaling=0;
+}
+
+
+
+
+// Androdioecy
+reproduction() {
+	// Step 1: determine fitness
+	//simple multiplicative fitness:
+	
+	//nmut1 = p1.individuals.countOfMutationsOfType(m1);
+
+	
+	fitnesses = rep(1, N);
+	
+	// Step 2: Determine sex
+	whichmales = p1.individuals.tag==1;
+	males = p1.subsetIndividuals(tag=1);
+   hermaphrodites = p1.subsetIndividuals(tag=0);
+   
+   // Step 3: from the progeny point of view
+   // => a (herm)parents 1 and parents 2 vector, where vector[i] correspond to progeny i
+   // parents 2 == parents 1 if selfed
+   // note: whichselfed could be changed to force an exact number of selfing event
+   whichselfed = sample(c(T,F), N, replace = T, weights = c(self_rate, 1 - self_rate));
+   noutcrossed = N - sum(whichselfed);
+   
+   hermparents1 = sample(hermaphrodites, N, replace=T, weights = fitnesses[!whichmales]);
+   parents2 = hermparents1;
+   parents2[!whichselfed] = sample(males, noutcrossed, replace=T, weights = fitnesses[whichmales]);
+   
+   // newsex of the progeny (0=herm, 1=male)
+   // for outcrossed progeny, 50% chance being male
+   newsex = integer(N);
+   newsex[!whichselfed] = sample(c(0,1), noutcrossed, replace=T);
+   // note newsex could be modified to force an exact sex ratio
+   // notably if population size is small and there is randomly no males, the code will bug
+   
+   //print(newsex);
+   //print(whichselfed);
+   //print(hermparents1);
+   //print(parents2);
+   
+   for(i in 0:(N-1)){
+   offspring = subpop.addCrossed(hermparents1[i],parents2[i]);
+   offspring.tag = newsex[i];
+   };
+   
+   // Necessary to call reproduction() only one time and pass in bulk progeny production
+   self.active = 0;
+}
+
+
+recombination(p1) {
+
+// breakpoints between chromosomes = between_chrom (defined as a constant in Initialize)
+// one breakpoints within each chromosomes (obligate CO) sampled according to rrmap
+
+positions = between_chrom;
+for(chr in unique(chromosomes)){
+focal_chr = which(chromosomes==chr);
+focal_chr = focal_chr[1:(size(focal_chr)-1)];
+focal_rr = rrmap[chromosomes==chr];
+focal_rr = focal_rr[1:(size(focal_rr)-1)];
+
+ncrossover = sum(runif(nCO) < rrtot[which(rrtot[,1]==chr) ,0]);
+
+positions = c(positions, sample(focal_chr,ncrossover, weights = focal_rr));
+}
+
+positions = positions[order(positions)];
+positions = positions[sample(c(T,F), size(positions) , replace=T)]; // 50cM / half chance to have a CO
+
+breakpoints = positions;
+//print(breakpoints);
+return T;
+}
+
+
+
+// output all fixed mutations at end
+2 late() {
+	sim.outputFull(outpath); }
+	

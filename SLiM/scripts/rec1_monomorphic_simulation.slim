@@ -1,0 +1,303 @@
+
+
+initialize() {
+
+// YOU NEED TO CHANGE THIS PATH 
+	setwd("/Users/tomparee/Documents/Documents - MacBook Pro de tom/Data/rec1EE/SLiM/transitory/");
+	
+	initializeSLiMModelType("nonWF");
+	
+	
+	if (exists("slimgui")) {
+		// YOU NEED TO CHANGE THIS PATH 
+		setwd("/Users/tomparee/Documents/Documents - MacBook Pro de tom/Data/rec1EE/SLiM/transitory/");
+		
+		defineConstant("ngeneration", 100); // number of generation
+		defineConstant("self_rate", 0.15); // selfing rate
+		defineConstant("nloci", 200); // number of loci
+		defineConstant("N", 1000); // population size
+		defineConstant("beta", 0); // epistasis
+		defineConstant("rec", 0);
+		defineConstant("nCO", 1);
+		defineConstant("spath", "w6ne5b3zfl/selection_burnstab_fitvar0.01_beta0_w6ne5b3zfl.txt");
+		defineConstant("rrpath", "w6ne5b3zfl/rrmap_w6ne5b3zfl.txt");
+		defineConstant('initialpoppath', "w6ne5b3zfl/initialPop_burnin_stab_w6ne5b3zfl.txt");
+		defineConstant('outpath', "w6ne5b3zfl/");
+		defineConstant('outGenerations', "30;70");
+		
+	};
+	
+	defineConstant('outputGenerations', c(asInteger(strsplit(outGenerations, ';'))));
+	
+	
+	
+	// sexratio according to selfing rate
+	defineConstant("male_freq", 0.5 * (1-self_rate)); // male frequency
+	defineConstant("herm_freq", 1 - male_freq); // herm frequency
+	
+	
+	
+	// selection and dominance coefficient 
+	scoef = readFile(spath);
+	defineConstant("s", asFloat(strsplit(scoef[0], ',')));
+	defineConstant("h", asFloat(strsplit(scoef[1], ',')));
+	
+	
+	
+	// recombination landscape (wt or mut)
+	// (!):The rows in the rr file need to be in the good order
+	rr = readFile(rrpath);
+	
+	if(rec==0){
+	defineConstant("rrmap", asFloat(strsplit(rr[0], ',')));
+	}else{
+	defineConstant("rrmap", asFloat(strsplit(rr[1], ',')));
+	};
+	
+	defineConstant("chromosomes", asInteger(strsplit(rr[2], ',')));
+	
+	
+	// determine loci between chrom
+	chrom_junctions = NULL;
+	for(chr in unique(chromosomes)){
+		chrom_junctions = c(chrom_junctions, min(which(chromosomes==chr)));
+	};
+	
+	if(size(chrom_junctions)>1){
+		chrom_junctions= chrom_junctions[1:(size(chrom_junctions)-1)];
+	}else{chrom_junctions = NULL;};
+	
+	defineConstant("between_chrom", chrom_junctions);
+	
+	// the recomination expected between the more distant marker
+	// Max = nCO if marker encompass the full chromosome
+	rtot = NULL;
+	for(chr in unique(chromosomes)){
+		rtot = c(rtot, sum(rrmap[chromosomes==chr]));
+	};
+	
+	
+	defineConstant("rrtot", cbind(rtot, asFloat(unique(chromosomes))));
+	
+	// Base parameters	(not used)
+	initializeMutationType("m1", 0.5, "f", 0.0);
+	
+	initializeGenomicElementType("g1", m1, 1.0);
+	initializeGenomicElement(g1, 0, nloci-1);
+	initializeMutationRate(0);
+	initializeRecombinationRate(0.5);
+	m1.convertToSubstitution = F;
+	
+
+}
+
+
+// //  Create an initial population of N individuals
+// (=> read the initial pop files, draw sex and rec-1 alleles)
+// (=> + adjust the number of generations). 
+1 early() {
+	
+	sim.readFromPopulationFile(initialpoppath);
+	print("HELLO THERE");
+	g = p1.individuals.genomes;
+	n = size(g);
+	
+	
+	// Set sex: 
+	inds = sim.subpopulations.individuals;
+	//sex: males are 1, herm are 0
+	defineConstant("Nbase", length(inds));
+	sex = sample(c( rep(1, asInteger(round(Nbase*male_freq))) , rep(0,asInteger(round(Nbase*herm_freq)))), Nbase);
+	inds[sex==1].tag = 1;
+	inds[sex==0].tag = 0;
+	
+	
+	// Adjust the number of generation
+	// as the generation number of the initial pop file vary wether there is a burn-in phase or not
+	// rescheduleScriptBlock function allow to reshedule 
+	//firstgen =  sim.cycle;
+	
+	
+	defineConstant("firstgen", sim.cycle);
+	community.rescheduleScriptBlock(s1, start=firstgen, end=firstgen);
+	community.rescheduleScriptBlock(s2, start=firstgen, end=firstgen+ngeneration+2); // +2 is to get generation of free recombination at the end
+	community.rescheduleScriptBlock(s3, start=firstgen+ngeneration, end=firstgen+ngeneration);
+
+}
+
+// Non overlapping generation
+early() {
+	//Kill individual with age > 0
+	// WARNING: in nonWF, fitness = survival
+	// The mating success (relative fitness) is computed in reproduction
+	p1.subsetIndividuals(minAge=1).fitnessScaling=0;
+}
+
+
+
+
+// Androdioecy
+reproduction() {
+	// Step 1: determine fitness
+	
+	popsize = size(p1.individuals);
+	
+	if(sim.cycle > firstgen){
+		
+		gval=NULL;
+		for(i in 0:(popsize-1)){
+			pos1 = p1.individuals.genome1[i].positionsOfMutationsOfType(m1);
+			pos2 = p1.individuals.genome2[i].positionsOfMutationsOfType(m1);
+			pos1 = match(0:(nloci-1), pos1);
+			pos2 = match(0:(nloci-1), pos2);
+			pos1 = ifelse(pos1==-1, 0,1);
+			pos2 = ifelse(pos2==-1, 0,1);
+			pos = pos1+pos2;
+			
+			alpha = s;
+			alpha[pos==1] = alpha[pos==1]*h[pos==1];
+			alpha[pos==0] = 0;
+			g=sum(alpha);
+			gval = c(gval,  g); // absolute genetic value of an individual if additive
+		};
+		
+		
+		if(min(gval) != max(gval)){// if still fitness variance
+		grel = (gval-min(gval)) / (max(gval) - min(gval)); // relative gval
+
+
+		grel = grel - beta*grel^2; //curve the fitness landscape for individual within a generation
+		gval2 = grel * (max(gval) - min(gval)) + min(gval); //new gval with epistasis. If beta = 0, then gval=gval2
+		
+		if(sim.cycle == firstgen+1){defineConstant("ginitial", mean(gval2));}; // the average gval at the start
+		gval2 = gval2 - ginitial; // change nothing to evolution but initial fitness will be 1, and ancestral gval centered on 0
+		
+
+		fitnesses = exp(gval2);
+		
+		
+		}else{
+		fitnesses = rep(1, size(gval));
+		};
+		
+		// after the last generation of evo, no anymore selection
+		if(sim.cycle>=firstgen+ngeneration){fitnesses = rep(1, size(gval));}
+		
+				
+		
+		if((sim.cycle % 2)==1){
+			
+			print(c(mean(fitnesses), var(fitnesses),var(log(fitnesses)),var(gval), min(fitnesses), max(fitnesses), sim.cycle-firstgen));
+		};
+	
+	}else{
+		fitnesses = rep(1, Nbase);
+	};
+	
+	// Step 2: Determine sex
+	whichmales = p1.individuals.tag==1;
+	males = p1.subsetIndividuals(tag=1);
+	hermaphrodites = p1.subsetIndividuals(tag=0);
+	
+	
+	// Step 3: from the progeny point of view
+	// => a (herm)parents 1 and parents 2 vector, where vector[i] correspond to progeny i
+	// parents 2 == parents 1 if selfed
+	// note: whichselfed could be changed to force an exact number of selfing event
+	//print(c(N, Nbase));
+	if(sim.cycle > firstgen){popsize=N;}else{popsize=Nbase;};
+	whichselfed = sample(c(T,F), popsize, replace = T, weights = c(self_rate, 1 - self_rate));
+	noutcrossed = popsize - sum(whichselfed);
+	
+	
+	hermparents1 = sample(hermaphrodites, popsize, replace=T, weights = fitnesses[!whichmales]);
+	parents2 = hermparents1;
+	parents2[!whichselfed] = sample(males, noutcrossed, replace=T, weights = fitnesses[whichmales]);
+	
+	// newsex of the progeny (0=herm, 1=male)
+	// for outcrossed progeny, 50% chance being male
+	newsex = integer(popsize);
+	//newsex[!whichselfed] = sample(c(0,1), noutcrossed, replace=T);
+	
+	// note newsex could be modified to force an exact sex ratio
+	// notably if population size is small and there is randomly no males, the code will bug
+	
+	//Force the sex ratio
+	no = asInteger(ceil(noutcrossed/2));
+	newsex[!whichselfed] = sample(c(rep(0, no), rep(1, no)), noutcrossed);
+	
+	
+	
+	
+	
+	
+	for(i in 0:(popsize-1)){
+		offspring = subpop.addCrossed(hermparents1[i],parents2[i]);
+		offspring.tag = newsex[i];
+	};
+	
+	// Necessary to call reproduction() only one time and pass in bulk progeny production
+	self.active = 0;
+}
+
+
+
+
+recombination(p1) {
+
+ if(sim.cycle>=firstgen+ngeneration){ // free recombination after the last generation of evo (to measure fitness var with/without linkage)
+  return F;
+  }else{
+
+ // breakpoints between chromosomes = between_chrom (defined as a constant in Initialize)
+ // one breakpoints within each chromosomes (obligate CO) sampled according to rrmap
+
+ positions = between_chrom;
+ 
+ for(chr in unique(chromosomes)){
+ 	focal_chr = which(chromosomes==chr);
+ 	focal_chr = focal_chr[1:(size(focal_chr)-1)];
+ 	focal_rr = rrmap[chromosomes==chr];
+ 	focal_rr = focal_rr[1:(size(focal_rr)-1)];
+ 	
+	// What is the number of CO given nCO and rrtot (=relative map lenght)
+	// With one obligate CO, but simulating only half of the CO, only 50% that we observe a CO in the simulated portion
+ 	ncrossover = sum(runif(nCO) < rrtot[which(rrtot[,1]==chr) ,0]);
+ 	// Sample n positions given the number of CO and according to recombination landscapes
+ 	positions = c(positions, sample(focal_chr,ncrossover, weights = focal_rr));
+
+ }
+
+ positions = positions[order(positions)];
+ positions = positions[sample(c(T,F), size(positions) , replace=T)]; // 50cM / half chance to have a CO
+
+ breakpoints = positions;
+ //print(breakpoints);
+ return T;
+ };
+
+}
+
+
+
+
+// print column names
+s1 2000 late() {
+	print("#OUT:");
+	print(c("mean.fitness", "var.fitness", "log.var.fitness", 'var.gabs', "min.fitness", "max.fitness","generation"));}
+
+
+// Output genotype matrix 
+s2 2002 late(){
+if(match(sim.cycle, outputGenerations+firstgen) != -1){
+outfile = paste(outpath, "outputMS_G",sim.cycle-firstgen,"_",getSeed(), ".txt", sep="");
+p1.individuals.genomes.outputMS(filePath=outfile);
+};
+
+}
+
+
+
+//end (the number of generation is adjusted with community.rescheduleScriptBlock in early
+s3 2002 late(){}
+
